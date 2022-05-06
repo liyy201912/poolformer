@@ -61,6 +61,16 @@ default_cfgs = {
 }
 
 
+def stem(in_chs, out_chs):
+    return nn.Sequential(
+        nn.Conv2d(in_chs, out_chs // 2, kernel_size=3, stride=2, padding=1),
+        nn.BatchNorm2d(out_chs // 2),
+        nn.ReLU(),
+        nn.Conv2d(out_chs // 2, out_chs, kernel_size=3, stride=2, padding=1),
+        nn.BatchNorm2d(out_chs),
+        nn.ReLU(),)
+
+
 class PatchEmbed(nn.Module):
     """
     Patch Embedding that is implemented by a layer of conv. 
@@ -142,6 +152,9 @@ class Mlp(nn.Module):
         self.drop = nn.Dropout(drop)
         self.apply(self._init_weights)
 
+        self.norm1 = nn.BatchNorm2d(hidden_features)
+        self.norm2 = nn.BatchNorm2d(out_features)
+
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
             trunc_normal_(m.weight, std=.02)
@@ -150,9 +163,15 @@ class Mlp(nn.Module):
 
     def forward(self, x):
         x = self.fc1(x)
+
+        x = self.norm1(x)
+
         x = self.act(x)
         x = self.drop(x)
         x = self.fc2(x)
+
+        x = self.norm2(x)
+
         x = self.drop(x)
         return x
 
@@ -178,9 +197,9 @@ class PoolFormerBlock(nn.Module):
 
         super().__init__()
 
-        self.norm1 = norm_layer(dim)
+        # self.norm1 = norm_layer(dim)
         self.token_mixer = Pooling(pool_size=pool_size)
-        self.norm2 = norm_layer(dim)
+        # self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, 
                        act_layer=act_layer, drop=drop)
@@ -196,16 +215,26 @@ class PoolFormerBlock(nn.Module):
                 layer_scale_init_value * torch.ones((dim)), requires_grad=True)
 
     def forward(self, x):
+        # if self.use_layer_scale:
+        #     x = x + self.drop_path(
+        #         self.layer_scale_1.unsqueeze(-1).unsqueeze(-1)
+        #         * self.token_mixer(self.norm1(x)))
+        #     x = x + self.drop_path(
+        #         self.layer_scale_2.unsqueeze(-1).unsqueeze(-1)
+        #         * self.mlp(self.norm2(x)))
+        # else:
+        #     x = x + self.drop_path(self.token_mixer(self.norm1(x)))
+        #     x = x + self.drop_path(self.mlp(self.norm2(x)))
         if self.use_layer_scale:
             x = x + self.drop_path(
                 self.layer_scale_1.unsqueeze(-1).unsqueeze(-1)
-                * self.token_mixer(self.norm1(x)))
+                * self.token_mixer(x))
             x = x + self.drop_path(
                 self.layer_scale_2.unsqueeze(-1).unsqueeze(-1)
-                * self.mlp(self.norm2(x)))
+                * self.mlp(x))
         else:
-            x = x + self.drop_path(self.token_mixer(self.norm1(x)))
-            x = x + self.drop_path(self.mlp(self.norm2(x)))
+            x = x + self.drop_path(self.token_mixer(x))
+            x = x + self.drop_path(self.mlp(x))
         return x
 
 
@@ -254,7 +283,7 @@ class PoolFormer(nn.Module):
     def __init__(self, layers, embed_dims=None, 
                  mlp_ratios=None, downsamples=None, 
                  pool_size=3, 
-                 norm_layer=GroupNorm, act_layer=nn.GELU, 
+                 norm_layer=GroupNorm, act_layer=nn.GELU,
                  num_classes=1000,
                  in_patch_size=7, in_stride=4, in_pad=2, 
                  down_patch_size=3, down_stride=2, down_pad=1, 
@@ -271,9 +300,10 @@ class PoolFormer(nn.Module):
             self.num_classes = num_classes
         self.fork_feat = fork_feat
 
-        self.patch_embed = PatchEmbed(
-            patch_size=in_patch_size, stride=in_stride, padding=in_pad, 
-            in_chans=3, embed_dim=embed_dims[0])
+        # self.patch_embed = PatchEmbed(
+        #     patch_size=in_patch_size, stride=in_stride, padding=in_pad,
+        #     in_chans=3, embed_dim=embed_dims[0])
+        self.patch_embed = stem(3, embed_dims[0])
 
         # set the main block in network
         network = []
@@ -412,15 +442,6 @@ class PoolFormer(nn.Module):
         return cls_out
 
 
-model_urls = {
-    "poolformer_s12": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_s12.pth.tar",
-    "poolformer_s24": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_s24.pth.tar",
-    "poolformer_s36": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_s36.pth.tar",
-    "poolformer_m36": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_m36.pth.tar",
-    "poolformer_m48": "https://github.com/sail-sg/poolformer/releases/download/v1.0/poolformer_m48.pth.tar",
-}
-
-
 @register_model
 def poolformer_s12(pretrained=False, **kwargs):
     """
@@ -439,10 +460,6 @@ def poolformer_s12(pretrained=False, **kwargs):
         mlp_ratios=mlp_ratios, downsamples=downsamples, 
         **kwargs)
     model.default_cfg = default_cfgs['poolformer_s']
-    if pretrained:
-        url = model_urls['poolformer_s12']
-        checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
-        model.load_state_dict(checkpoint)
     return model
 
 
@@ -460,10 +477,6 @@ def poolformer_s24(pretrained=False, **kwargs):
         mlp_ratios=mlp_ratios, downsamples=downsamples, 
         **kwargs)
     model.default_cfg = default_cfgs['poolformer_s']
-    if pretrained:
-        url = model_urls['poolformer_s24']
-        checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
-        model.load_state_dict(checkpoint)
     return model
 
 
@@ -482,10 +495,6 @@ def poolformer_s36(pretrained=False, **kwargs):
         layer_scale_init_value=1e-6, 
         **kwargs)
     model.default_cfg = default_cfgs['poolformer_s']
-    if pretrained:
-        url = model_urls['poolformer_s36']
-        checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
-        model.load_state_dict(checkpoint)
     return model
 
 
@@ -504,10 +513,6 @@ def poolformer_m36(pretrained=False, **kwargs):
         layer_scale_init_value=1e-6, 
         **kwargs)
     model.default_cfg = default_cfgs['poolformer_m']
-    if pretrained:
-        url = model_urls['poolformer_m36']
-        checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
-        model.load_state_dict(checkpoint)
     return model
 
 
@@ -526,10 +531,6 @@ def poolformer_m48(pretrained=False, **kwargs):
         layer_scale_init_value=1e-6, 
         **kwargs)
     model.default_cfg = default_cfgs['poolformer_m']
-    if pretrained:
-        url = model_urls['poolformer_m48']
-        checkpoint = torch.hub.load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
-        model.load_state_dict(checkpoint)
     return model
 
 
